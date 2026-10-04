@@ -14,7 +14,7 @@ export class AtlassianOAuth {
   async accessToken() { if(!this.token) throw new Error('Atlassian authorization is required'); if(Date.now()>=this.token.expires_at-60000) await this.refresh(); return this.token.access_token; }
   async accessibleResources() { const r=await fetch(RESOURCES_ENDPOINT,{headers:{Authorization:`Bearer ${await this.accessToken()}`,Accept:'application/json'}}); return this.parse(r) as Promise<AccessibleResource[]>; }
   hasAuthorization(){return this.token!==null;}
-  private save(value:Omit<AtlassianTokenSet,'expires_at'>){this.token={...value,expires_at:Date.now()+(value.expires_in??3600)*1000};return this.token;}
+  private save(value:Omit<AtlassianTokenSet,'expires_at'>){this.token={...value,refresh_token:value.refresh_token??this.token?.refresh_token,expires_at:Date.now()+(value.expires_in??3600)*1000};return this.token;}
   private async parse(r:Response){const b=await r.text();let v:any={};try{v=b?JSON.parse(b):{};}catch{v={raw:b};}if(!r.ok)throw new Error(`Atlassian OAuth ${r.status}: ${JSON.stringify(v).slice(0,1000)}`);return v;}
 }
 export class AtlassianApi {
@@ -22,4 +22,3 @@ export class AtlassianApi {
   async request<T>(product:'jira'|'confluence',path:string,init:RequestInit={}):Promise<T>{const r=await fetch(`https://api.atlassian.com/ex/${product}/${await this.cloudId()}${path}`,{...init,headers:{Accept:'application/json',...(init.body?{'Content-Type':'application/json'}:{}),Authorization:`Bearer ${await this.oauth.accessToken()}`,...(init.headers??{})}});const b=await r.text();let v:any={};try{v=b?JSON.parse(b):{};}catch{v={raw:b};}if(!r.ok)throw new Error(`Atlassian API ${r.status}: ${JSON.stringify(v).slice(0,1500)}`);return v as T;}
 }
 export function randomState(){return crypto.randomUUID();}
-
