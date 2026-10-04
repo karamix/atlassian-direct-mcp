@@ -18,7 +18,11 @@ const publicUrl = required('MCP_PUBLIC_URL').replace(/\/$/, '');
 const atlClientId = required('ATLASSIAN_CLIENT_ID');
 const atlClientSecret = required('ATLASSIAN_CLIENT_SECRET');
 const atlRedirectUri = required('ATLASSIAN_REDIRECT_URI');
-const atlScopes = Array.from(new Set([\n  ...(process.env.ATLASSIAN_SCOPES ?? '').split(/\s+/).filter(Boolean),\n  'read:page:confluence',\n  'write:page:confluence'\n]));
+const atlScopes = Array.from(new Set([
+  ...(process.env.ATLASSIAN_SCOPES ?? '').split(/\s+/).filter(Boolean),
+  'read:page:confluence',
+  'write:page:confluence'
+]));
 const configuredSiteUrl = process.env.ATLASSIAN_SITE_URL?.replace(/\/$/, '');
 const oauthIssuer = publicUrl;
 const oauthResource = publicUrl;
