@@ -209,7 +209,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport = sessionId ? transports.get(sessionId) : undefined;
       if (!transport) {
-        transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => crypto.randomUUID(), onsessioninitialized: id => transports.set(id, transport!) });
+        transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => crypto.randomUUID(), onsessioninitialized: id => { transports.set(id, transport!); } });
         transport.onclose = () => { if (transport?.sessionId) transports.delete(transport.sessionId); };
         await createMcpServer().connect(transport);
       }
@@ -223,3 +223,4 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, '0.0.0.0', () => console.log(`kostas-atlassian-direct listening on http://localhost:${port}`));
+
