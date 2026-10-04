@@ -171,11 +171,21 @@ async function handleAtlassianCallback(req: http.IncomingMessage, res: http.Serv
 async function handleToken(req: http.IncomingMessage, res: http.ServerResponse) {
   const body = await readBody(req);
   const params = new URLSearchParams(body);
+  if (params.get('grant_type') === 'refresh_token') {
+    const supplied = params.get('refresh_token') ?? '';
+    if (!refreshTokens.has(supplied) || !validHostToken(supplied, 'refresh')) return json(res, 400, { error: 'invalid_grant' });
+    refreshTokens.delete(supplied);
+    const access = hostToken('access', 3600);
+    const refresh = hostToken('refresh', 60 * 60 * 24 * 30);
+    accessTokens.set(access, Date.now() + 3_600_000);
+    refreshTokens.add(refresh);
+    return json(res, 200, { access_token: access, refresh_token: refresh, token_type: 'Bearer', expires_in: 3600, scope: oauthScope });
+  }
   const code = params.get('code') ?? '';
   const record = authorizationCodes.get(code);
   if (!record || record.expiresAt < Date.now()) return json(res, 400, { error: 'invalid_grant' });
   authorizationCodes.delete(code);
-  if (params.get('client_id') !== record.clientId || params.get('redirect_uri') !== record.redirectUri || !pkceChallenge(params.get('code_verifier') ?? '').length) return json(res, 400, { error: 'invalid_grant' });
+  if (params.get('client_id') !== record.clientId || params.get('redirect_uri') !== record.redirectUri || pkceChallenge(params.get('code_verifier') ?? '') !== record.codeChallenge) return json(res, 400, { error: 'invalid_grant' });
   const access = hostToken('access', 3600);
   const refresh = hostToken('refresh', 60 * 60 * 24 * 30);
   accessTokens.set(access, Date.now() + 3_600_000);
@@ -223,4 +233,3 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, '0.0.0.0', () => console.log(`kostas-atlassian-direct listening on http://localhost:${port}`));
-
