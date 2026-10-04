@@ -142,10 +142,11 @@ function redirectWithCode(res: http.ServerResponse, pending: PendingAuthorizatio
 
 async function handleAuthorize(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = new URL(req.url ?? '/', publicUrl);
+  const form = req.method === 'POST' ? new URLSearchParams(await readBody(req)) : url.searchParams;
   const pending: PendingAuthorization = {
-    clientId: url.searchParams.get('client_id') ?? '', redirectUri: url.searchParams.get('redirect_uri') ?? '', state: url.searchParams.get('state') ?? '', codeChallenge: url.searchParams.get('code_challenge') ?? '', resource: url.searchParams.get('resource') ?? '', scope: url.searchParams.get('scope') ?? oauthScope
+    clientId: form.get('client_id') ?? '', redirectUri: form.get('redirect_uri') ?? '', state: form.get('state') ?? '', codeChallenge: form.get('code_challenge') ?? '', resource: form.get('resource') ?? '', scope: form.get('scope') ?? oauthScope
   };
-  if (!validClient(pending.clientId) || !validRedirect(pending.redirectUri) || pending.resource !== oauthResource || !pending.codeChallenge || url.searchParams.get('code_challenge_method') !== 'S256') return json(res, 400, { error: 'invalid_request', error_description: 'Invalid OAuth client, redirect, resource, or PKCE parameters' });
+  if (!validClient(pending.clientId) || !validRedirect(pending.redirectUri) || pending.resource !== oauthResource || !pending.codeChallenge || form.get('code_challenge_method') !== 'S256') return json(res, 400, { error: 'invalid_request', error_description: 'Invalid OAuth client, redirect, resource, or PKCE parameters' });
   if (!atlassianOAuth.hasAuthorization()) {
     const atlState = randomState();
     pendingAtlassian.set(atlState, pending);
@@ -215,7 +216,10 @@ const server = http.createServer(async (req, res) => {
     if (path === '/oauth/atlassian/callback' && req.method === 'GET') return await handleAtlassianCallback(req, res);
     if (path === '/oauth/token' && req.method === 'POST') return await handleToken(req, res);
     if (path === '/mcp') {
-      if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
+      if (!authorized(req)) {
+        res.setHeader('WWW-Authenticate', `Bearer resource_metadata="${publicUrl}/.well-known/oauth-protected-resource", scope="${oauthScope}"`);
+        return json(res, 401, { error: 'unauthorized' });
+      }
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport = sessionId ? transports.get(sessionId) : undefined;
       if (!transport) {
