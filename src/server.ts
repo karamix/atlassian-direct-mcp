@@ -212,7 +212,7 @@ const server = http.createServer(async (req, res) => {
     if (path === '/health') return json(res, 200, { ok: true, service: 'kostas-atlassian-direct' });
     if (path === '/.well-known/oauth-authorization-server') return json(res, 200, { issuer: oauthIssuer, authorization_endpoint: `${publicUrl}/oauth/authorize`, token_endpoint: `${publicUrl}/oauth/token`, authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: true, token_endpoint_auth_methods_supported: ['none'], code_challenge_methods_supported: ['S256'], scopes_supported: [oauthScope, 'offline_access'] });
     if (path === '/.well-known/oauth-protected-resource') return json(res, 200, { resource: oauthResource, authorization_servers: [oauthIssuer], scopes_supported: [oauthScope] });
-    if (path === '/oauth/authorize' && req.method === 'GET') return await handleAuthorize(req, res);
+    if (path === '/oauth/authorize' && (req.method === 'GET' || req.method === 'POST')) return await handleAuthorize(req, res);
     if (path === '/oauth/atlassian/callback' && req.method === 'GET') return await handleAtlassianCallback(req, res);
     if (path === '/oauth/token' && req.method === 'POST') return await handleToken(req, res);
     if (path === '/mcp') {
