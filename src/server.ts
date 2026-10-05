@@ -6,6 +6,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { AtlassianApi, AtlassianOAuth, randomState } from './atlassian.js';
+import { registerJiraCreateIssue } from './jira-create-issue.js';
+
+const serviceVersion = '0.1.1';
 
 const required = (name: string) => {
   const value = process.env[name];
@@ -119,7 +122,8 @@ function text(value: unknown) {
 }
 
 function createMcpServer() {
-  const server = new McpServer({ name: 'kostas-atlassian-direct', version: '0.1.0' });
+  const server = new McpServer({ name: 'kostas-atlassian-direct', version: serviceVersion });
+  registerJiraCreateIssue(server, api);
   server.registerTool('jira_search', { title: 'Search Jira', description: 'Search Jira with JQL.', inputSchema: { jql: z.string().min(1), maxResults: z.number().int().min(1).max(100).optional() } }, async ({ jql, maxResults }) => text(await api.request('jira', '/rest/api/3/search/jql', { method: 'POST', body: JSON.stringify({ jql, maxResults: maxResults ?? 50 }) })));
   server.registerTool('jira_get_project', { title: 'Get Jira project', description: 'Retrieve Jira project metadata, including available issue types.', inputSchema: { projectKey: z.string().regex(/^[A-Z][A-Z0-9_]*$/) } }, async ({ projectKey }) => text(await api.request('jira', `/rest/api/3/project/${encodeURIComponent(projectKey)}`)));
   server.registerTool('jira_get_issue', { title: 'Get Jira issue', description: 'Retrieve a Jira issue.', inputSchema: { issueKey: issueKey, fields: z.array(z.string()).optional() } }, async ({ issueKey: key, fields }) => text(await api.request('jira', `/rest/api/3/issue/${encodeURIComponent(key)}${fields?.length ? `?fields=${encodeURIComponent(fields.join(','))}` : ''}`)));
@@ -214,7 +218,7 @@ function authorized(req: http.IncomingMessage) {
 const server = http.createServer(async (req, res) => {
   try {
     const path = new URL(req.url ?? '/', publicUrl).pathname;
-    if (path === '/health') return json(res, 200, { ok: true, service: 'kostas-atlassian-direct' });
+    if (path === '/health') return json(res, 200, { ok: true, service: 'kostas-atlassian-direct', version: serviceVersion });
     if (path === '/.well-known/oauth-authorization-server') return json(res, 200, { issuer: oauthIssuer, authorization_endpoint: `${publicUrl}/oauth/authorize`, token_endpoint: `${publicUrl}/oauth/token`, authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: true, token_endpoint_auth_methods_supported: ['none'], code_challenge_methods_supported: ['S256'], scopes_supported: [oauthScope, 'offline_access'] });
     if (path === '/.well-known/oauth-protected-resource') return json(res, 200, { resource: oauthResource, authorization_servers: [oauthIssuer], scopes_supported: [oauthScope] });
     if (path === '/oauth/authorize' && (req.method === 'GET' || req.method === 'POST')) return await handleAuthorize(req, res);
