@@ -74,6 +74,5 @@ through an in-memory MCP client. These tests do not create live Jira issues.
 
 The remote plugin discovers tools from the existing `/mcp` endpoint; no plugin
 manifest change is needed. After deploying the server update, refresh/reconnect
-the plugin to discover the new tool. Server restarts clear the current in-memory
-OAuth state, so reconnection may require Atlassian consent again. `/health`
+the plugin to discover the new tool. The encrypted OAuth state is restored from the configured persistent disk when the server starts. `/health`
 includes the server version to help verify deployment.
