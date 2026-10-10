@@ -31,7 +31,8 @@ function isOAuthState(value: unknown): value is OAuthState {
   const state = value as Partial<OAuthState>;
   if (!state.accessTokens || typeof state.accessTokens !== 'object' || Array.isArray(state.accessTokens)) return false;
   if (!Array.isArray(state.refreshTokens) || !state.refreshTokens.every(token => typeof token === 'string')) return false;
-  if (state.atlassianToken !== null && state.atlassianToken !== undefined) {
+  if (!Object.prototype.hasOwnProperty.call(state, 'atlassianToken')) return false;
+  if (state.atlassianToken !== null) {
     const token = state.atlassianToken as Partial<AtlassianTokenState>;
     if (typeof token.access_token !== 'string' || typeof token.expires_at !== 'number') return false;
     if (token.refresh_token !== undefined && typeof token.refresh_token !== 'string') return false;
