@@ -7,8 +7,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { AtlassianApi, AtlassianOAuth, randomState } from './atlassian.js';
 import { registerJiraCreateIssue } from './jira-create-issue.js';
+import { OAuthStateStore } from './oauth-state-store.js';
 
-const serviceVersion = '0.1.1';
+const serviceVersion = '0.1.2';
 
 const required = (name: string) => {
   const value = process.env[name];
@@ -31,19 +32,21 @@ const oauthIssuer = publicUrl;
 const oauthResource = publicUrl;
 const oauthScope = 'atlassian:access';
 
+const oauthStatePath = process.env.OAUTH_STATE_PATH ?? (process.env.NODE_ENV === 'production' ? required('OAUTH_STATE_PATH') : './.data/oauth-state.enc');
+const oauthState = new OAuthStateStore(oauthStatePath, atlClientSecret);
+
 const atlassianOAuth = new AtlassianOAuth({
   clientId: atlClientId,
   clientSecret: atlClientSecret,
   redirectUri: atlRedirectUri,
   scopes: atlScopes,
   siteUrl: configuredSiteUrl
-});
+}, oauthState);
 
 let cloudId: string | null = null;
 const pendingAtlassian = new Map<string, PendingAuthorization>();
 const authorizationCodes = new Map<string, AuthorizationCode>();
-const accessTokens = new Map<string, number>();
-const refreshTokens = new Set<string>();
+
 const transports = new Map<string, StreamableHTTPServerTransport>();
 const requestContext = new AsyncLocalStorage<http.IncomingMessage>();
 
@@ -178,29 +181,48 @@ async function handleAtlassianCallback(req: http.IncomingMessage, res: http.Serv
   redirectWithCode(res, pending);
 }
 
+async function issueHostTokens() {
+  const access = hostToken('access', 3600);
+  const refresh = hostToken('refresh', 60 * 60 * 24 * 30);
+  await oauthState.update(state => {
+    for (const [token, expiresAt] of Object.entries(state.accessTokens)) {
+      if (expiresAt <= Date.now()) delete state.accessTokens[token];
+    }
+    state.refreshTokens = state.refreshTokens.filter(token => validHostToken(token, 'refresh'));
+    state.accessTokens[access] = Date.now() + 3_600_000;
+    state.refreshTokens.push(refresh);
+  });
+  return { access, refresh };
+}
+
 async function handleToken(req: http.IncomingMessage, res: http.ServerResponse) {
   const body = await readBody(req);
   const params = new URLSearchParams(body);
   if (params.get('grant_type') === 'refresh_token') {
     const supplied = params.get('refresh_token') ?? '';
-    if (!refreshTokens.has(supplied) || !validHostToken(supplied, 'refresh')) return json(res, 400, { error: 'invalid_grant' });
-    refreshTokens.delete(supplied);
-    const access = hostToken('access', 3600);
-    const refresh = hostToken('refresh', 60 * 60 * 24 * 30);
-    accessTokens.set(access, Date.now() + 3_600_000);
-    refreshTokens.add(refresh);
-    return json(res, 200, { access_token: access, refresh_token: refresh, token_type: 'Bearer', expires_in: 3600, scope: oauthScope });
+    const tokens = await oauthState.update(state => {
+      state.refreshTokens = state.refreshTokens.filter(token => validHostToken(token, 'refresh'));
+      if (!state.refreshTokens.includes(supplied) || !validHostToken(supplied, 'refresh')) return null;
+      state.refreshTokens = state.refreshTokens.filter(token => token !== supplied);
+      for (const [token, expiresAt] of Object.entries(state.accessTokens)) {
+        if (expiresAt <= Date.now()) delete state.accessTokens[token];
+      }
+      const access = hostToken('access', 3600);
+      const refresh = hostToken('refresh', 60 * 60 * 24 * 30);
+      state.accessTokens[access] = Date.now() + 3_600_000;
+      state.refreshTokens.push(refresh);
+      return { access, refresh };
+    });
+    if (!tokens) return json(res, 400, { error: 'invalid_grant' });
+    return json(res, 200, { access_token: tokens.access, refresh_token: tokens.refresh, token_type: 'Bearer', expires_in: 3600, scope: oauthScope });
   }
   const code = params.get('code') ?? '';
   const record = authorizationCodes.get(code);
   if (!record || record.expiresAt < Date.now()) return json(res, 400, { error: 'invalid_grant' });
   authorizationCodes.delete(code);
   if (params.get('client_id') !== record.clientId || params.get('redirect_uri') !== record.redirectUri || pkceChallenge(params.get('code_verifier') ?? '') !== record.codeChallenge) return json(res, 400, { error: 'invalid_grant' });
-  const access = hostToken('access', 3600);
-  const refresh = hostToken('refresh', 60 * 60 * 24 * 30);
-  accessTokens.set(access, Date.now() + 3_600_000);
-  refreshTokens.add(refresh);
-  return json(res, 200, { access_token: access, refresh_token: refresh, token_type: 'Bearer', expires_in: 3600, scope: oauthScope });
+  const tokens = await issueHostTokens();
+  return json(res, 200, { access_token: tokens.access, refresh_token: tokens.refresh, token_type: 'Bearer', expires_in: 3600, scope: oauthScope });
 }
 
 async function readBody(req: http.IncomingMessage) {
@@ -212,7 +234,8 @@ async function readBody(req: http.IncomingMessage) {
 function authorized(req: http.IncomingMessage) {
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  return accessTokens.has(token) && (accessTokens.get(token) ?? 0) > Date.now();
+  const expiresAt = oauthState.snapshot().accessTokens[token];
+  return typeof expiresAt === 'number' && expiresAt > Date.now();
 }
 
 const server = http.createServer(async (req, res) => {
@@ -245,4 +268,13 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, '0.0.0.0', () => console.log(`kostas-atlassian-direct listening on http://localhost:${port}`));
+async function start() {
+  await oauthState.load();
+  await atlassianOAuth.restore();
+  server.listen(port, '0.0.0.0', () => console.log(`kostas-atlassian-direct listening on http://localhost:${port}`));
+}
+
+void start().catch(error => {
+  console.error('[server] failed to load persistent OAuth state', error);
+  process.exitCode = 1;
+});
