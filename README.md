@@ -25,11 +25,16 @@ The server encrypts ChatGPT host tokens and Atlassian OAuth credentials with AES
 The encryption key is derived from `ATLASSIAN_CLIENT_SECRET`, so keep that secret stable;
 rotating it requires a fresh Atlassian authorization.
 
-For Render, attach a persistent disk mounted at `/var/data` and set
-`OAUTH_STATE_PATH=/var/data/oauth-state.enc` before deploying. The default local
-development path is `.data/oauth-state.enc`. Without a persistent disk, the file is
-lost when the service is replaced or restarted, and the connection will still need
-authorization again. Corrupt or undecryptable state fails closed at startup.
+For Render Free, create an Upstash Redis database and set `UPSTASH_REDIS_REST_URL`
+and `UPSTASH_REDIS_REST_TOKEN` in the service environment. The server stores one
+encrypted state value in Redis and restores it before accepting requests. The REST
+token is a secret; never commit it. Leave Upstash eviction and auto-upgrade disabled
+to avoid losing OAuth state or incurring charges when a quota is reached.
+
+For local development, or another host with persistent storage, the server can use
+`OAUTH_STATE_PATH`; its default is `.data/oauth-state.enc`. When Upstash variables
+are configured, Redis takes precedence over the file path. Corrupt or undecryptable
+state fails closed at startup.
 
 ## Required deployment secrets
 

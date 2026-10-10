@@ -44,10 +44,23 @@ export class OAuthStateStore {
   private state = emptyState();
   private writeQueue: Promise<void> = Promise.resolve();
   private readonly encryptionKey: Buffer;
+  private readonly redis?: { url: string; token: string; key: string };
 
-  constructor(private readonly filePath: string, clientSecret: string) {
-    if (!filePath) throw new Error('OAuth state path is required');
+  constructor(private readonly filePath: string | undefined, clientSecret: string, redis?: { url: string; token: string }) {
+    if (!filePath && !redis) throw new Error('OAuth state storage requires a file path or Upstash Redis configuration');
     if (!clientSecret) throw new Error('Atlassian client secret is required to protect OAuth state');
+    if (redis) {
+      const parsedUrl = new URL(redis.url);
+      if (parsedUrl.protocol !== 'https:' || parsedUrl.pathname !== '/' || parsedUrl.search || parsedUrl.hash) {
+        throw new Error('Upstash Redis REST URL must be an HTTPS origin');
+      }
+      if (!redis.token) throw new Error('Upstash Redis REST token is required');
+      this.redis = {
+        url: parsedUrl.origin,
+        token: redis.token,
+        key: 'kostas-atlassian-direct:oauth-state:v1'
+      };
+    }
     this.encryptionKey = crypto.createHmac('sha256', clientSecret).update('kostas-atlassian-direct/oauth-state/v1').digest();
   }
 
@@ -56,20 +69,30 @@ export class OAuthStateStore {
   }
 
   async load(): Promise<void> {
-    let contents: string;
-    try {
-      contents = await fs.readFile(this.filePath, 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    let contents: string | null;
+    if (this.redis) {
+      const value = await this.redisCommand('GET');
+      if (value === null) {
         this.state = emptyState();
         return;
       }
-      throw error;
+      if (typeof value !== 'string') throw new Error('Upstash Redis returned invalid OAuth state data');
+      contents = value;
+    } else {
+      try {
+        contents = await fs.readFile(this.filePath!, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          this.state = emptyState();
+          return;
+        }
+        throw error;
+      }
     }
 
     const envelope = JSON.parse(contents) as { version?: number; iv?: string; tag?: string; ciphertext?: string };
     if (envelope.version !== 1 || !envelope.iv || !envelope.tag || !envelope.ciphertext) {
-      throw new Error('OAuth state file has an unsupported or invalid format');
+      throw new Error('OAuth state has an unsupported or invalid format');
     }
 
     try {
@@ -80,11 +103,11 @@ export class OAuthStateStore {
         decipher.final()
       ]).toString('utf8');
       const restored: unknown = JSON.parse(plaintext);
-      if (!isOAuthState(restored)) throw new Error('OAuth state file contains invalid data');
+      if (!isOAuthState(restored)) throw new Error('OAuth state contains invalid data');
       this.state = restored;
     } catch (error) {
-      if (error instanceof Error && error.message === 'OAuth state file contains invalid data') throw error;
-      throw new Error('OAuth state file could not be decrypted; keep the Atlassian client secret stable or reauthorize after rotating it');
+      if (error instanceof Error && error.message === 'OAuth state contains invalid data') throw error;
+      throw new Error('OAuth state could not be decrypted; keep the Atlassian client secret stable or reauthorize after rotating it');
     }
   }
 
@@ -100,9 +123,30 @@ export class OAuthStateStore {
     return operation;
   }
 
+  private async redisCommand(command: 'GET' | 'SET', value?: string): Promise<unknown> {
+    if (!this.redis) throw new Error('Upstash Redis is not configured');
+    const isWrite = command === 'SET';
+    const response = await fetch(`${this.redis.url}/${command.toLowerCase()}/${encodeURIComponent(this.redis.key)}`, {
+      method: isWrite ? 'POST' : 'GET',
+      headers: {
+        Authorization: `Bearer ${this.redis.token}`,
+        ...(isWrite ? { 'Content-Type': 'text/plain' } : {})
+      },
+      ...(isWrite ? { body: value ?? '' } : {})
+    });
+    let payload: { result?: unknown; error?: string };
+    try {
+      payload = await response.json() as { result?: unknown; error?: string };
+    } catch {
+      throw new Error(`Upstash Redis ${command} returned an invalid response (HTTP ${response.status})`);
+    }
+    if (!response.ok || payload.error) {
+      throw new Error(`Upstash Redis ${command} failed (HTTP ${response.status})`);
+    }
+    return payload.result;
+  }
+
   private async persist(state: OAuthState): Promise<void> {
-    const directory = path.dirname(this.filePath);
-    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
     const ciphertext = Buffer.concat([
@@ -115,9 +159,18 @@ export class OAuthStateStore {
       tag: cipher.getAuthTag().toString('base64'),
       ciphertext: ciphertext.toString('base64')
     });
+
+    if (this.redis) {
+      const result = await this.redisCommand('SET', envelope);
+      if (result !== 'OK') throw new Error('Upstash Redis did not confirm saving OAuth state');
+      return;
+    }
+
+    const directory = path.dirname(this.filePath!);
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const temporaryPath = `${this.filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
     await fs.writeFile(temporaryPath, envelope, { encoding: 'utf8', mode: 0o600 });
-    await fs.rename(temporaryPath, this.filePath);
-    await fs.chmod(this.filePath, 0o600);
+    await fs.rename(temporaryPath, this.filePath!);
+    await fs.chmod(this.filePath!, 0o600);
   }
 }

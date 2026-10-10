@@ -32,8 +32,17 @@ const oauthIssuer = publicUrl;
 const oauthResource = publicUrl;
 const oauthScope = 'atlassian:access';
 
-const oauthStatePath = process.env.OAUTH_STATE_PATH ?? (process.env.NODE_ENV === 'production' ? required('OAUTH_STATE_PATH') : './.data/oauth-state.enc');
-const oauthState = new OAuthStateStore(oauthStatePath, atlClientSecret);
+const upstashUrl = process.env.UPSTASH_REDIS_REST_URL?.trim();
+const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+if (Boolean(upstashUrl) !== Boolean(upstashToken)) {
+  throw new Error('Set both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN, or configure OAUTH_STATE_PATH');
+}
+const oauthStatePath = upstashUrl ? undefined : (process.env.OAUTH_STATE_PATH ?? (process.env.NODE_ENV === 'production' ? required('OAUTH_STATE_PATH') : './.data/oauth-state.enc'));
+const oauthState = new OAuthStateStore(
+  oauthStatePath,
+  atlClientSecret,
+  upstashUrl && upstashToken ? { url: upstashUrl, token: upstashToken } : undefined
+);
 
 const atlassianOAuth = new AtlassianOAuth({
   clientId: atlClientId,

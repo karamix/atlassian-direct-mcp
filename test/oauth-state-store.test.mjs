@@ -56,3 +56,48 @@ test('serializes concurrent updates and rejects state encrypted with another cli
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('Upstash Redis stores encrypted OAuth state and restores it after reload', async () => {
+  const values = new Map();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(typeof input === 'string' ? input : input.url);
+    assert.equal(url.origin, 'https://redis.example');
+    assert.equal(init.headers.Authorization, 'Bearer test-rest-token');
+    const key = decodeURIComponent(url.pathname.split('/').at(-1));
+    if (url.pathname.startsWith('/get/')) {
+      return new Response(JSON.stringify({ result: values.get(key) ?? null }), { status: 200 });
+    }
+    if (url.pathname.startsWith('/set/')) {
+      values.set(key, init.body);
+      return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+    }
+    throw new Error(`Unexpected Upstash path: ${url.pathname}`);
+  };
+
+  try {
+    const config = { url: 'https://redis.example', token: 'test-rest-token' };
+    const first = new OAuthStateStore(undefined, clientSecret, config);
+    await first.load();
+    await first.update(state => {
+      state.atlassianToken = {
+        access_token: 'atlassian-access-secret',
+        refresh_token: 'atlassian-refresh-secret',
+        expires_at: 1234567890
+      };
+      state.accessTokens['chatgpt-access-secret'] = 1234567890;
+      state.refreshTokens.push('chatgpt-refresh-secret');
+    });
+
+    const stored = values.get('kostas-atlassian-direct:oauth-state:v1');
+    assert.equal(typeof stored, 'string');
+    assert.equal(stored.includes('atlassian-refresh-secret'), false);
+    assert.equal(stored.includes('chatgpt-refresh-secret'), false);
+
+    const restored = new OAuthStateStore(undefined, clientSecret, config);
+    await restored.load();
+    assert.deepEqual(restored.snapshot(), first.snapshot());
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
