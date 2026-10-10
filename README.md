@@ -19,6 +19,18 @@ A private MCP server for Jira and Confluence Cloud.
 - Delete operations are not exposed.
 - The host OAuth layer and Atlassian OAuth layer are separate.
 
+## Persistent OAuth state
+
+The server encrypts ChatGPT host tokens and Atlassian OAuth credentials with AES-256-GCM.
+The encryption key is derived from `ATLASSIAN_CLIENT_SECRET`, so keep that secret stable;
+rotating it requires a fresh Atlassian authorization.
+
+For Render, attach a persistent disk mounted at `/var/data` and set
+`OAUTH_STATE_PATH=/var/data/oauth-state.enc` before deploying. The default local
+development path is `.data/oauth-state.enc`. Without a persistent disk, the file is
+lost when the service is replaced or restarted, and the connection will still need
+authorization again. Corrupt or undecryptable state fails closed at startup.
+
 ## Required deployment secrets
 
 Set these in the hosting provider, never in source control:
@@ -62,6 +74,5 @@ through an in-memory MCP client. These tests do not create live Jira issues.
 
 The remote plugin discovers tools from the existing `/mcp` endpoint; no plugin
 manifest change is needed. After deploying the server update, refresh/reconnect
-the plugin to discover the new tool. Server restarts clear the current in-memory
-OAuth state, so reconnection may require Atlassian consent again. `/health`
+the plugin to discover the new tool. The encrypted OAuth state is restored from the configured persistent disk when the server starts. `/health`
 includes the server version to help verify deployment.
