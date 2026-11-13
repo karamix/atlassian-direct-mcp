@@ -166,7 +166,8 @@ function redirectWithCode(res: http.ServerResponse, pending: PendingAuthorizatio
 }
 
 function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+  const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return value.replace(/[&<>"']/g, char => entities[char]);
 }
 
 function validOwnerConnectionSecret(supplied: string) {
@@ -177,7 +178,7 @@ function validOwnerConnectionSecret(supplied: string) {
 
 function showOwnerAuthorizationForm(res: http.ServerResponse, params: URLSearchParams) {
   const names = ['client_id', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'resource', 'scope', 'response_type'];
-  const hiddenFields = names.map(name => '<input type="hidden" name="' + name + '" value="' + escapeHtml(params.get(name) ?? '') + '">').join('');
+  const hiddenFields = names.map(name => '<input type="hidden" name="' + name + '" value="' + escapeHtml(params.get(name) ?? (name === 'scope' ? oauthScope : '')) + '">').join('');
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Atlassian MCP</title></head>' +
     '<body><main><h1>Kostas Atlassian Direct</h1><p>Enter your private owner connection secret to authorize this ChatGPT connection.</p>' +
     '<form method="POST" action="/oauth/authorize">' + hiddenFields +
