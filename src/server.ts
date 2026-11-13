@@ -9,7 +9,7 @@ import { AtlassianApi, AtlassianOAuth, randomState } from './atlassian.js';
 import { registerJiraCreateIssue } from './jira-create-issue.js';
 import { OAuthStateStore } from './oauth-state-store.js';
 
-const serviceVersion = '0.1.2';
+const serviceVersion = '0.1.3';
 
 const required = (name: string) => {
   const value = process.env[name];
@@ -21,6 +21,10 @@ const port = Number(process.env.PORT ?? 10000);
 const publicUrl = required('MCP_PUBLIC_URL').replace(/\/$/, '');
 const atlClientId = required('ATLASSIAN_CLIENT_ID');
 const atlClientSecret = required('ATLASSIAN_CLIENT_SECRET');
+const ownerConnectionSecret = required('MCP_OWNER_CONNECTION_SECRET');
+if (ownerConnectionSecret.length < 32 || ownerConnectionSecret === atlClientSecret) {
+  throw new Error('MCP_OWNER_CONNECTION_SECRET must be at least 32 characters and distinct from ATLASSIAN_CLIENT_SECRET');
+}
 const atlRedirectUri = required('ATLASSIAN_REDIRECT_URI');
 const atlScopes = Array.from(new Set([
   ...(process.env.ATLASSIAN_SCOPES ?? '').split(/\s+/).filter(Boolean),
@@ -161,13 +165,47 @@ function redirectWithCode(res: http.ServerResponse, pending: PendingAuthorizatio
   res.end();
 }
 
+function escapeHtml(value: string) {
+  const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return value.replace(/[&<>"']/g, char => entities[char]);
+}
+
+function validOwnerConnectionSecret(supplied: string) {
+  const expectedDigest = crypto.createHash('sha256').update(ownerConnectionSecret).digest();
+  const suppliedDigest = crypto.createHash('sha256').update(supplied).digest();
+  return supplied.length > 0 && crypto.timingSafeEqual(expectedDigest, suppliedDigest);
+}
+
+function showOwnerAuthorizationForm(res: http.ServerResponse, params: URLSearchParams) {
+  const names = ['client_id', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'resource', 'scope', 'response_type'];
+  const hiddenFields = names.map(name => '<input type="hidden" name="' + name + '" value="' + escapeHtml(params.get(name) ?? (name === 'scope' ? oauthScope : '')) + '">').join('');
+  const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Atlassian MCP</title></head>' +
+    '<body><main><h1>Kostas Atlassian Direct</h1><p>Enter your private owner connection secret to authorize this ChatGPT connection.</p>' +
+    '<form method="POST" action="/oauth/authorize">' + hiddenFields +
+    '<label for="connection_secret">Owner connection secret</label> ' +
+    '<input id="connection_secret" name="connection_secret" type="password" autocomplete="off" required> ' +
+    '<button type="submit">Authorize</button></form></main></body></html>';
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" });
+  res.end(html);
+}
+
 async function handleAuthorize(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = new URL(req.url ?? '/', publicUrl);
   const form = req.method === 'POST' ? new URLSearchParams(await readBody(req)) : url.searchParams;
   const pending: PendingAuthorization = {
     clientId: form.get('client_id') ?? '', redirectUri: form.get('redirect_uri') ?? '', state: form.get('state') ?? '', codeChallenge: form.get('code_challenge') ?? '', resource: form.get('resource') ?? '', scope: form.get('scope') ?? oauthScope
   };
-  if (!validClient(pending.clientId) || !validRedirect(pending.redirectUri) || pending.resource !== oauthResource || !pending.codeChallenge || form.get('code_challenge_method') !== 'S256') return json(res, 400, { error: 'invalid_request', error_description: 'Invalid OAuth client, redirect, resource, or PKCE parameters' });
+  if (!validClient(pending.clientId) || !validRedirect(pending.redirectUri) || pending.resource !== oauthResource ||
+      !/^[A-Za-z0-9_-]{43}$/.test(pending.codeChallenge) || form.get('code_challenge_method') !== 'S256' ||
+      form.get('response_type') !== 'code' || pending.scope !== oauthScope) {
+    return json(res, 400, { error: 'invalid_request', error_description: 'Invalid OAuth client, redirect, resource, scope, or PKCE parameters' });
+  }
+  if (req.method === 'GET') return showOwnerAuthorizationForm(res, form);
+  if (!validOwnerConnectionSecret(form.get('connection_secret') ?? '')) {
+    return json(res, 403, { error: 'access_denied', error_description: 'Owner authorization required' });
+  }
   if (!atlassianOAuth.hasAuthorization()) {
     const atlState = randomState();
     pendingAtlassian.set(atlState, pending);
@@ -176,7 +214,6 @@ async function handleAuthorize(req: http.IncomingMessage, res: http.ServerRespon
   }
   redirectWithCode(res, pending);
 }
-
 async function handleAtlassianCallback(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = new URL(req.url ?? '/', publicUrl);
   const state = url.searchParams.get('state') ?? '';

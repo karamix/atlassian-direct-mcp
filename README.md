@@ -42,12 +42,21 @@ Set these in the hosting provider, never in source control:
 
 - ATLASSIAN_CLIENT_ID
 - ATLASSIAN_CLIENT_SECRET
+- MCP_OWNER_CONNECTION_SECRET (new: independent high-entropy secret, at least 32 characters)
 - MCP_PUBLIC_URL
 - ATLASSIAN_REDIRECT_URI
 - ATLASSIAN_SITE_URL
 - ATLASSIAN_SCOPES
 
 The Atlassian callback URL must exactly match the value configured in the Atlassian Developer Console.
+
+## Owner-gated ChatGPT authorization
+
+Before deploying this release, configure `MCP_OWNER_CONNECTION_SECRET` in Render as a randomly generated secret (32+ characters, recommended 256-bit random). Do **not** use your Atlassian client secret, API token, or password. Never commit the value to Git. The service fails to start without this setting. Set the secret before redeploying, preferably with a controlled deployment step to avoid starting old source with an unrelated environment change.
+
+ChatGPT's OAuth connection now displays an owner-secret form. An accepted ChatGPT client ID and a valid PKCE request are not proof of ownership. Only the holder of the owner connection secret can initiate issuance of a new MCP access/refresh token; on first Atlassian setup, the owner check also precedes Atlassian authorization. Previously issued host tokens are not revoked by this change; review existing connection grants and reset host token state if compromise is suspected (which will require reconnecting ChatGPT). The server continues using a single shared Atlassian OAuth grant, so it remains single-owner only, not multi-tenant.
+
+Post-deployment verify: GET `/oauth/authorize` with valid OAuth parameters shows the owner form (does not redirect or issue a code); POST with a wrong/missing secret returns 403; POST with the correct secret completes the existing OAuth flow; unauthenticated `/mcp` returns 401. Do not automate live authorization attempts using your production credentials.
 
 ## Create a Jira issue
 
